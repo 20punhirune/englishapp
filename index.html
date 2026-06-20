@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Flash English Pro - Smart Scroll</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { 
+            font-family: 'Inter', sans-serif; 
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: none;
+            background-color: #f1f5f9;
+        }
+        .blur-xl { filter: blur(20px); }
+        @keyframes pulse-fast { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.05); } }
+        .animate-pulse-fast { animation: pulse-fast 0.6s infinite ease-in-out; }
+        
+        .scroll-container { 
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
+            height: 100%;
+        }
+
+        .phrase-card {
+            min-height: 140px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]:focus { outline: none; }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 8px; cursor: pointer; background: #e2e8f0; border-radius: 4px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            height: 24px; width: 24px; border-radius: 50%; background: #4f46e5;
+            cursor: pointer; -webkit-appearance: none; margin-top: -8px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        input[type=range]:disabled::-webkit-slider-runnable-track { background: #f1f5f9; cursor: not-allowed; }
+        input[type=range]:disabled::-webkit-slider-thumb { background: #cbd5e1; cursor: not-allowed; }
+
+        /* スクロール位置調整用のスペーサー */
+        .scroll-spacer {
+            height: 60vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const CheckIcon = ({ active }) => (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={active ? "text-emerald-500" : "text-slate-200"}>
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+        );
+
+        const ResetIcon = ({ active }) => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={active ? "text-indigo-600" : "text-slate-300"}>
+                <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38"/>
+            </svg>
+        );
+
+        const FileUpIcon = () => (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+        );
+
+        const PlayIcon = () => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        );
+
+        const PauseIcon = () => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+        );
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState("training");
+            const [items, setItems] = useState([]);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [currentIndex, setCurrentIndex] = useState(-1);
+            const [status, setStatus] = useState("待機中");
+            const [isThinking, setIsThinking] = useState(false);
+            const [isReadingEn, setIsReadingEn] = useState(false);
+            const [voices, setVoices] = useState([]);
+            const [selectedJaVoice, setSelectedJaVoice] = useState("");
+            const [selectedEnVoice, setSelectedEnVoice] = useState("");
+            const [showImportModal, setShowImportModal] = useState(false);
+            const [importError, setImportError] = useState("");
+            
+            const [listeningText, setListeningText] = useState("");
+            const [isListeningPlaying, setIsListeningPlaying] = useState(false);
+            const [playbackRate, setPlaybackRate] = useState(1.0);
+            const currentCharIndexRef = useRef(0);
+
+            const synth = window.speechSynthesis;
+            const timerRef = useRef(null);
+            const isPlayingRef = useRef(false);
+            const currentIdxRef = useRef(-1);
+            const playPhaseRef = useRef("ja");
+            const fileInputRef = useRef(null);
+            const mainContentRef = useRef(null);
+            const cardRefs = useRef([]);
+
+            // スクロール追従ロジック
+            useEffect(() => {
+                if (activeTab === "training" && currentIndex >= 0 && mainContentRef.current && cardRefs.current[currentIndex]) {
+                    const container = mainContentRef.current;
+                    const targetCard = cardRefs.current[currentIndex];
+                    
+                    const offset = 80; 
+                    const targetScrollTop = targetCard.offsetTop - offset;
+                    
+                    container.scrollTo({
+                        top: targetScrollTop,
+                        behavior: 'smooth'
+                    });
+                }
+            }, [currentIndex, activeTab]);
+
+            useEffect(() => {
+                const storageKey = 'flash_english_pro_research_v1';
+                const savedData = localStorage.getItem(storageKey);
+                const defaultData = [
+                    ["My research can be broadly summarized as the study of exoplanets.", "私の研究は、概ね系外惑星の研究と要約できます。"],
+                    ["The detection of small signals in the data was a challenge.", "データの中から小さな信号を検出することは困難でした。"],
+                    ["Accurate characterization of the host star is essential.", "主星の正確な特性評価は不可欠です。"],
+                    ["Thank you for giving me the opportunity to present today.", "本日は発表の機会をいただきありがとうございます。"],
+                    ["He eventually passed the oral exam after much preparation.", "準備を重ねた結果、彼は最終的に口頭試験に合格しました。"],
+                    ["He used to stay for a few months to collaborate with our group.", "彼はかつて、私たちのグループと共同研究するために数ヶ月間滞在していました。"]
+                ].map((d, i) => ({ id: i + 1, en: d[0], ja: d[1], learned: false }));
+
+                if (savedData) { 
+                    try { setItems(JSON.parse(savedData)); } catch (e) { setItems(defaultData); } 
+                } else { setItems(defaultData); }
+
+                const loadVoices = () => {
+                    const v = synth.getVoices();
+                    if (v.length > 0) {
+                        setVoices(v);
+                        setSelectedJaVoice(prev => prev || v.find(v => v.lang.startsWith("ja"))?.name || "");
+                        setSelectedEnVoice(prev => prev || v.find(v => v.lang.startsWith("en"))?.name || "");
+                    }
+                };
+                loadVoices();
+                if (speechSynthesis.onvoiceschanged !== undefined) speechSynthesis.onvoiceschanged = loadVoices;
+                return () => { synth.cancel(); clearTimeout(timerRef.current); };
+            }, []);
+
+            useEffect(() => {
+                if (items.length > 0) {
+                    localStorage.setItem('flash_english_pro_research_v1', JSON.stringify(items));
+                    cardRefs.current = cardRefs.current.slice(0, items.length);
+                }
+            }, [items]);
+
+            const speak = (text, lang, voiceName, rate = 1) => {
+                return new Promise((resolve) => {
+                    const u = new SpeechSynthesisUtterance(text);
+                    const voice = voices.find(v => v.name === voiceName);
+                    if (voice) u.voice = voice;
+                    u.lang = lang;
+                    u.rate = rate;
+                    u.onend = () => resolve(true);
+                    u.onerror = () => resolve(false);
+                    synth.speak(u);
+                });
+            };
+
+            const findNextIndex = (startIndex, includeCurrent = false) => {
+                if (includeCurrent && startIndex >= 0 && !items[startIndex].learned) return startIndex;
+                for (let i = startIndex + 1; i < items.length; i++) if (!items[i].learned) return i;
+                for (let i = 0; i <= startIndex; i++) if (i < items.length && !items[i].learned) return i;
+                return -1;
+            };
+
+            const runTraining = async (index, startPhase = "ja") => {
+                if (!isPlayingRef.current || index === -1) return;
+                currentIdxRef.current = index;
+                setCurrentIndex(index);
+                const item = items[index];
+
+                if (startPhase === "ja") {
+                    playPhaseRef.current = "ja";
+                    setIsReadingEn(false);
+                    setIsThinking(false);
+                    setStatus("読み上げ中 (日)");
+                    const ok = await speak(item.ja, "ja", selectedJaVoice, 1.2);
+                    if (!ok || !isPlayingRef.current) return;
+                    setStatus("思考中...");
+                    setIsThinking(true);
+                    playPhaseRef.current = "en"; 
+                    const waitTime = Math.max(2000, item.en.length * 95 + 1200);
+                    await new Promise(r => timerRef.current = setTimeout(r, waitTime));
+                    setIsThinking(false);
+                    if (!isPlayingRef.current) return;
+                }
+
+                playPhaseRef.current = "en";
+                setIsThinking(false);
+                setIsReadingEn(true);
+                setStatus("読み上げ中 (英)");
+                const okEn = await speak(item.en, "en", selectedEnVoice, 1.0);
+                if (!okEn || !isPlayingRef.current) return;
+                setStatus("次へ...");
+                await new Promise(r => timerRef.current = setTimeout(r, 1800));
+                if (!isPlayingRef.current) return;
+                const next = findNextIndex(index);
+                if (next !== -1) runTraining(next, "ja"); else { stopTraining(); setStatus("完了"); }
+            };
+
+            const startTraining = (idx = -1, phase = "ja") => {
+                const targetIdx = idx !== -1 ? idx : findNextIndex(currentIndex, true);
+                if (targetIdx === -1) { setStatus("未習得なし"); return; }
+                isPlayingRef.current = true;
+                setIsPlaying(true);
+                runTraining(targetIdx, phase);
+            };
+
+            const stopTraining = () => {
+                isPlayingRef.current = false;
+                setIsPlaying(false);
+                synth.cancel();
+                clearTimeout(timerRef.current);
+                setIsThinking(false);
+                setIsReadingEn(true);
+                setStatus("停止中");
+            };
+
+            const togglePlay = () => {
+                if (isPlaying) stopTraining();
+                else startTraining(currentIdxRef.current, playPhaseRef.current);
+            };
+
+            const startListeningPlayback = (text, startIndex, rate) => {
+                const remainingText = text.substring(startIndex);
+                if (!remainingText.trim()) { setIsListeningPlaying(false); currentCharIndexRef.current = 0; return; }
+                const u = new SpeechSynthesisUtterance(remainingText);
+                const voice = voices.find(v => v.name === selectedEnVoice);
+                if (voice) u.voice = voice;
+                u.lang = "en"; u.rate = rate;
+                u.onboundary = (event) => { if (event.name === 'word' || event.name === 'sentence') currentCharIndexRef.current = startIndex + event.charIndex; };
+                u.onend = () => { if (!synth.speaking) { setIsListeningPlaying(false); currentCharIndexRef.current = 0; } };
+                u.onerror = () => setIsListeningPlaying(false);
+                synth.cancel();
+                synth.speak(u);
+            };
+
+            const toggleListeningPlay = () => {
+                if (isListeningPlaying) { synth.cancel(); setIsListeningPlaying(false); }
+                else { if (!listeningText.trim()) return; setIsListeningPlaying(true); startListeningPlayback(listeningText, currentCharIndexRef.current, playbackRate); }
+            };
+
+            const toggleItemLearned = (id) => setItems(prev => prev.map(item => item.id === id ? { ...item, learned: !item.learned } : item));
+
+            // TSVインポートのハンドラー
+            const handleImportTSV = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setImportError("");
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const rows = event.target.result.split(/\r?\n/).filter(row => row.trim() !== "");
+                    const newItems = rows.map((row, index) => {
+                        // タブで分割する
+                        const firstTab = row.indexOf('\t');
+                        let en = "";
+                        let ja = "";
+                        
+                        if (firstTab !== -1) {
+                            en = row.substring(0, firstTab);
+                            ja = row.substring(firstTab + 1);
+                        } else {
+                            // タブがない行は無視するため、空文字のままにする
+                            en = "";
+                            ja = "";
+                        }
+                        
+                        return { 
+                            id: Date.now() + index, 
+                            en: en.replace(/^"|"$/g, '').trim(), 
+                            ja: ja.replace(/^"|"$/g, '').trim(), 
+                            learned: false 
+                        };
+                    }).filter(item => item.ja && item.en);
+                    
+                    if (newItems.length > 0) { 
+                        setItems(newItems); 
+                        setCurrentIndex(-1); 
+                        stopTraining(); 
+                        setShowImportModal(false); 
+                    } else {
+                        setImportError("有効なデータが見つかりませんでした。英語と日本語が「タブ」で区切られているか確認してください。");
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="flex flex-col h-screen overflow-hidden text-slate-900 bg-slate-100">
+                    <header className="bg-white border-b px-4 py-3 shadow-sm z-50">
+                        <div className="max-w-2xl mx-auto flex flex-col gap-2">
+                            <div className="flex justify-between items-center">
+                                <h1 className="text-lg font-black text-indigo-700 italic tracking-tighter">FLASH ENGLISH PRO</h1>
+                                <div className="flex gap-2 items-center">
+                                    <button onClick={() => { setShowImportModal(true); setImportError(""); }} className="p-2 bg-slate-100 rounded-lg text-slate-500 hover:text-indigo-600">
+                                        <FileUpIcon />
+                                    </button>
+                                    <div className="flex bg-slate-100 p-1 rounded-xl">
+                                        <button onClick={() => {setActiveTab("training"); stopTraining();}} className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all ${activeTab === "training" ? "bg-white shadow text-indigo-600" : "text-slate-500"}`}>Training</button>
+                                        <button onClick={() => {setActiveTab("listening"); stopTraining(); synth.cancel(); setIsListeningPlaying(false); currentCharIndexRef.current = 0;}} className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all ${activeTab === "listening" ? "bg-white shadow text-indigo-600" : "text-slate-500"}`}>Listening</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <select className="text-[9px] p-1.5 border rounded bg-slate-50 font-bold" value={selectedJaVoice} onChange={e => setSelectedJaVoice(e.target.value)}>
+                                    {voices.filter(v => v.lang.startsWith("ja")).map(v => <option key={v.name} value={v.name}>{v.name.substring(0,20)}</option>)}
+                                </select>
+                                <select className="text-[9px] p-1.5 border rounded bg-slate-50 font-bold" value={selectedEnVoice} onChange={e => setSelectedEnVoice(e.target.value)}>
+                                    {voices.filter(v => v.lang.startsWith("en")).map(v => <option key={v.name} value={v.name}>{v.name.substring(0,20)}</option>)}
+                                </select>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main ref={mainContentRef} className="flex-1 overflow-y-auto p-4 pb-20 scroll-container relative">
+                        <div className="max-w-2xl mx-auto">
+                            {activeTab === "training" ? (
+                                <div className="space-y-4 pt-4">
+                                    {items.map((item, idx) => {
+                                        const isActive = currentIndex === idx;
+                                        const shouldBlur = isActive && isPlaying && isThinking;
+                                        const canShowText = isActive && isReadingEn;
+                                        return (
+                                            <div key={item.id} ref={el => cardRefs.current[idx] = el} onClick={() => { stopTraining(); startTraining(idx, "ja"); }} 
+                                                className={`phrase-card p-5 rounded-2xl border-2 bg-white transition-all cursor-pointer relative ${isActive ? 'border-indigo-500 shadow-xl scale-[1.02] z-30' : 'border-transparent shadow-sm opacity-60'} ${item.learned && !isActive ? 'opacity-20 grayscale' : ''}`}>
+                                                <div className="flex justify-between items-start gap-3">
+                                                    <div className="flex-1">
+                                                        <p className={`text-[9px] font-black mb-1 tracking-widest ${isActive ? 'text-indigo-500' : 'text-slate-400'}`}>ITEM {String(idx+1).padStart(3, '0')}</p>
+                                                        <p className={`text-base font-bold leading-tight mb-4 ${item.learned && !isActive ? 'line-through' : ''}`}>{item.ja}</p>
+                                                        <div className="min-h-[1.5rem] flex items-center flex-wrap gap-2 relative">
+                                                            <p className={`text-lg font-black text-indigo-700 tracking-tight transition-all duration-500 ${canShowText && !shouldBlur ? 'blur-0 opacity-100' : 'blur-xl opacity-0 select-none'}`}>{item.en}</p>
+                                                            {isActive && isThinking && isPlaying && (
+                                                                <div className="absolute left-0 text-indigo-400 text-[10px] font-black animate-pulse-fast uppercase flex items-center gap-2"><span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>WAITING...</div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <button onClick={(e) => { e.stopPropagation(); toggleItemLearned(item.id); }} className="mt-1 flex-shrink-0"><CheckIcon active={item.learned} /></button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    <div className="scroll-spacer"></div>
+                                </div>
+                            ) : (
+                                <div className="space-y-6 pt-4 pb-40">
+                                    <div className="bg-white rounded-3xl p-6 shadow-xl border-2 border-indigo-50">
+                                        <textarea value={listeningText} onChange={e => {setListeningText(e.target.value); synth.cancel(); setIsListeningPlaying(false); currentCharIndexRef.current = 0;}} 
+                                            className="w-full h-80 p-2 text-lg font-medium border-none outline-none bg-transparent resize-none" placeholder="英文をここに貼り付けてください..."></textarea>
+                                    </div>
+                                    <div className={`bg-white rounded-3xl p-6 shadow-lg border transition-all ${isListeningPlaying ? 'border-amber-200' : 'border-slate-100'}`}>
+                                        <div className="flex justify-between items-center mb-4">
+                                            <span className={`text-[10px] font-black uppercase tracking-widest ${isListeningPlaying ? 'text-amber-500' : 'text-slate-400'}`}>{isListeningPlaying ? "Stop playback to change speed" : "Playback Speed"}</span>
+                                            <span className={`text-sm font-black px-3 py-1 rounded-full ${isListeningPlaying ? 'text-amber-600 bg-amber-50' : 'text-indigo-600 bg-indigo-50'}`}>{playbackRate.toFixed(1)}x</span>
+                                        </div>
+                                        <input type="range" min="1.0" max="2.0" step="0.2" value={playbackRate} onChange={(e) => setPlaybackRate(parseFloat(e.target.value))} disabled={isListeningPlaying} className="mb-2" />
+                                        <div className="flex justify-between text-[10px] font-bold text-slate-400 px-1"><span>1.0x</span><span>1.2x</span><span>1.4x</span><span>1.6x</span><span>1.8x</span><span>2.0x</span></div>
+                                    </div>
+                                    <button onClick={toggleListeningPlay} className={`w-full py-5 rounded-3xl text-white font-black text-xl shadow-lg transition-all flex items-center justify-center gap-4 active:scale-95 ${isListeningPlaying ? 'bg-rose-500' : 'bg-indigo-600'}`}>
+                                        {isListeningPlaying ? <><PauseIcon /> PAUSE</> : <><PlayIcon /> {currentCharIndexRef.current > 0 ? "RESUME" : "PLAY TEXT"}</>}
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </main>
+
+                    <footer className="fixed bottom-0 left-0 right-0 bg-white/95 p-6 pb-8 border-t shadow-[0_-10px_30px_rgba(0,0,0,0.1)] z-[100] backdrop-blur-md">
+                        <div className="max-w-2xl mx-auto flex flex-col gap-3">
+                            <div className="flex justify-between items-center text-[10px] font-black tracking-widest h-4 uppercase">
+                                <div className="flex items-center gap-2">
+                                    {(isListeningPlaying || (activeTab === "training" && isPlaying)) ? (
+                                        <span className="text-indigo-600 animate-pulse flex items-center gap-2">
+                                            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                                            PLAYING
+                                        </span>
+                                    ) : (
+                                        <span className="text-slate-400">
+                                            {activeTab === "training" ? status : "LISTENING MODE"}
+                                        </span>
+                                    )}
+                                </div>
+                                {activeTab === "training" && <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">{items.filter(i=>i.learned).length} / {items.length} DONE</span>}
+                            </div>
+                            <div className="flex gap-3">
+                                {activeTab === "training" ? (
+                                    <>
+                                        <button onClick={() => { if(window.confirm("進捗をリセットしますか？")) { setItems(prev => prev.map(i => ({...i, learned: false}))); stopTraining(); } }} className="p-4 rounded-2xl border bg-slate-50 active:bg-slate-200 transition-colors">
+                                            <ResetIcon active={items.some(i=>i.learned)} />
+                                        </button>
+                                        <button onClick={togglePlay} className={`flex-1 py-4 rounded-2xl text-white font-black text-lg shadow-lg transition-all active:scale-95 flex items-center justify-center gap-3 ${isPlaying ? 'bg-rose-500' : 'bg-indigo-600'}`}>
+                                            {isPlaying ? "STOP" : "START TRAINING"}
+                                        </button>
+                                    </>
+                                ) : (
+                                    <button onClick={() => { if(window.confirm("テキストを消去しますか？")) { setListeningText(""); synth.cancel(); setIsListeningPlaying(false); currentCharIndexRef.current = 0; } }} className="w-full py-4 rounded-2xl border bg-slate-50 text-slate-500 font-black text-sm uppercase tracking-widest">Clear Text</button>
+                                )}
+                            </div>
+                        </div>
+                    </footer>
+
+                    {showImportModal && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6">
+                            <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
+                                <h2 className="text-xl font-black mb-1 text-indigo-700 tracking-tighter uppercase">Import TSV</h2>
+                                <p className="text-[10px] text-slate-500 mb-6 font-medium italic">フォーマット: 英語 [Tab] 日本語 (.tsv または .txt)</p>
+                                
+                                {importError && (
+                                    <div className="mb-4 p-3 bg-rose-50 text-rose-600 text-xs rounded-lg font-bold">
+                                        {importError}
+                                    </div>
+                                )}
+
+                                <input type="file" accept=".tsv,.txt" className="hidden" ref={fileInputRef} onChange={handleImportTSV} />
+                                <div className="flex flex-col gap-3">
+                                    <button onClick={() => fileInputRef.current.click()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">SELECT FILE</button>
+                                    <button onClick={() => setShowImportModal(false)} className="w-full py-4 bg-slate-100 text-slate-500 rounded-2xl font-bold">CANCEL</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

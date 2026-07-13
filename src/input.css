@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- 自前のスタイル（元の <style> ブロック相当） --- */
+@layer base {
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer utilities {
+  .scroll-container {
+    scroll-behavior: smooth;
+  }
+}
+
+/*
+  Webフォント (Google Fonts の Inter) は外部リクエストになるためオフライン対応で削除し、
+  tailwind.config.js の fontFamily.sans を Inter → system-ui のフォールバック列に設定している。
+  Inter を厳密に使いたい場合は README の「フォントを self-host する」を参照。
+*/
